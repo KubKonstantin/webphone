@@ -1,0 +1,21 @@
+services:
+  nginx:
+    image: nginx:1.27-alpine
+    depends_on:
+      - sip-phone
+    ports:
+      - "${HTTP_PORT:-80}:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    restart: unless-stopped
+
+  sip-phone:
+    build: .
+    env_file: .env
+    environment:
+      NODE_ENV: production
+    expose:
+      - "3000"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped

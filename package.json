@@ -1,0 +1,17 @@
+{
+  "name": "sip-web-phone",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace @sip-phone/server & npm run dev --workspace @sip-phone/client",
+    "build": "npm run build --workspace @sip-phone/client && npm run build --workspace @sip-phone/server",
+    "start": "npm run start --workspace @sip-phone/server",
+    "typecheck": "npm run typecheck --workspace @sip-phone/client && npm run typecheck --workspace @sip-phone/server"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
