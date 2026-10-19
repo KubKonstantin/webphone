@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRightLeft,
+  BellOff,
   LogOut,
   Mic,
   MicOff,
@@ -14,6 +15,7 @@ import {
   Volume2
 } from "lucide-react";
 import { api, type CallRecord, type User } from "./api";
+import { AudioSetup } from "./components/AudioSetup";
 import { CallHistory } from "./components/CallHistory";
 import { DialPad } from "./components/DialPad";
 import { PhoneBook } from "./components/PhoneBook";
@@ -21,6 +23,8 @@ import { SipPhone, type PhoneSnapshot } from "./sip/SipPhone";
 
 const initialSnapshot: PhoneSnapshot = {
   registration: "offline",
+  dnd: false,
+  audioPlaybackBlocked: false,
   callState: "idle",
   muted: false,
   held: false,
@@ -79,6 +83,7 @@ export default function App() {
 
   useEffect(() => {
     if (!user) return;
+    phone.configureUser(user.login);
     const unsubscribe = phone.subscribe(setSnapshot);
     phone.setRemoteAudioElement(audioRef.current);
     void phone.start();
@@ -165,9 +170,10 @@ export default function App() {
         <div className="brand"><span className="brand-mark small"><PhoneCall size={20} /></span><strong>Web Phone</strong></div>
         <div className="user-area">
           <div className="connection-pill">
-            <span className={`status-dot ${snapshot.registration}`} />
-            <span>{registrationLabel(snapshot.registration)}</span>
+            <span className={`status-dot ${snapshot.dnd && snapshot.registration === "registered" ? "dnd" : snapshot.registration}`} />
+            <span>{snapshot.dnd && snapshot.registration === "registered" ? "Не беспокоить" : registrationLabel(snapshot.registration)}</span>
           </div>
+          <button className={`dnd-button ${snapshot.dnd ? "active" : ""}`} aria-pressed={snapshot.dnd} title="Не беспокоить: отклонять входящие звонки" onClick={() => phone.setDnd(!snapshot.dnd)}><BellOff size={17} /><span>{snapshot.dnd ? "DND включён" : "Не беспокоить"}</span></button>
           <div className="profile">
             {user.picture ? <img src={user.picture} alt="" /> : <span>{(user.name ?? user.login).slice(0, 1).toUpperCase()}</span>}
             <div><strong>{user.name ?? user.login}</strong><small>{snapshot.sipIdentity ?? user.login}</small></div>
@@ -176,6 +182,7 @@ export default function App() {
         </div>
       </header>
 
+      <AudioSetup key={user.login} phone={phone} storageKey={`web-phone.audio.${user.login}`} busy={inCall} />
       <div className="workspace">
         <section className="phone-panel panel">
           <div className="phone-status">
@@ -184,6 +191,8 @@ export default function App() {
             <p>{snapshot.callState === "active" ? formatTimer(elapsed) : snapshot.sipIdentity ?? "SIP не подключён"}</p>
           </div>
 
+          {snapshot.dnd && <div className="dnd-banner">Не беспокоить: входящие отклоняются. Исходящие звонки доступны.</div>}
+          {snapshot.audioPlaybackBlocked && <button className="secondary-button audio-retry" onClick={() => void phone.resumeAudio()}>Включить звук</button>}
           {snapshot.error && <div className="error-banner">{snapshot.error}</div>}
           {snapshot.callState === "idle" && snapshot.hangupReason && <div className="hangup-reason">{snapshot.hangupReason}</div>}
 

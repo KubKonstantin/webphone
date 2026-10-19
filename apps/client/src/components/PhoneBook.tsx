@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { BookUser, Download, Phone, Trash2, Upload } from "lucide-react";
 
+import { CopyNumber } from "./CopyNumber";
+
 type Contact = {
   id: string;
   name: string;
@@ -121,7 +123,7 @@ export function PhoneBook({ storageKey, onCall }: { storageKey: string; onCall: 
         ) : contacts.map((contact) => (
           <div className="contact-item" key={contact.id}>
             <button className="contact-call" onClick={() => onCall(contact.number)} title="Набрать номер"><Phone size={17} /></button>
-            <div><strong>{contact.name}</strong><span>{contact.number}</span></div>
+            <div><strong>{contact.name}</strong><div className="number-with-copy"><span>{contact.number}</span><CopyNumber number={contact.number} /></div></div>
             <button className="contact-delete" onClick={() => save(contacts.filter((item) => item.id !== contact.id))} title="Удалить контакт"><Trash2 size={16} /></button>
           </div>
         ))}

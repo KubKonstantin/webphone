@@ -10,6 +10,8 @@ import {
   type InviterOptions,
   type UserAgentOptions
 } from "sip.js";
+import { Ringtone } from "../audio/Ringtone";
+import { defaultAudioPreferences, microphoneConstraints, setAudioOutput, type AudioPreferences } from "../audio/devices";
 import { ApiError, api, type CallRecord, type CallStatus, type SipCredentials } from "../api";
 
 export type RegistrationState = "offline" | "connecting" | "registered" | "error";
@@ -18,6 +20,8 @@ export type DtmfMode = "rtp" | "info";
 
 export type PhoneSnapshot = {
   registration: RegistrationState;
+  dnd: boolean;
+  audioPlaybackBlocked: boolean;
   callState: CallUiState;
   direction?: "incoming" | "outgoing";
   remote?: string;
@@ -45,6 +49,7 @@ type ActiveCall = {
   hangupWhenEstablished: boolean;
   persisted: boolean;
   hangupReason?: string;
+  mediaCleanup?: () => void;
 };
 
 type SessionWithPeerConnection = Session & {
@@ -58,16 +63,17 @@ export class SipPhone {
   private pendingCredentials?: SipCredentials;
   private activeCall?: ActiveCall;
   private remoteAudio?: HTMLAudioElement;
-  private ringtoneContext?: AudioContext;
-  private ringtoneInterval?: number;
-  private ringtoneStopTimer?: number;
-  private ringtoneOscillators: OscillatorNode[] = [];
+  private ringtone = new Ringtone();
+  private audioPreferences: AudioPreferences = { ...defaultAudioPreferences };
+  private dndStorageKey?: string;
   private refreshTimer?: number;
   private reconnectTimer?: number;
   private subscribers = new Set<(snapshot: PhoneSnapshot) => void>();
   private disposed = false;
   private snapshot: PhoneSnapshot = {
     registration: "offline",
+    dnd: false,
+    audioPlaybackBlocked: false,
     callState: "idle",
     muted: false,
     held: false,
@@ -85,7 +91,59 @@ export class SipPhone {
 
   setRemoteAudioElement(element: HTMLAudioElement | null): void {
     this.remoteAudio = element ?? undefined;
-    if (this.remoteAudio) this.remoteAudio.volume = this.snapshot.volume;
+    if (this.remoteAudio) {
+      this.remoteAudio.volume = this.snapshot.volume;
+      void setAudioOutput(this.remoteAudio, this.audioPreferences.outputId)
+        .catch((error) => this.update({ error: this.errorMessage(error) }));
+    }
+  }
+
+  configureUser(login: string): void {
+    this.dndStorageKey = `web-phone.dnd.${login}`;
+    try { this.update({ dnd: localStorage.getItem(this.dndStorageKey) === "true" }); }
+    catch { this.update({ dnd: false }); }
+  }
+
+  setDnd(dnd: boolean): void {
+    this.update({ dnd });
+    try { if (this.dndStorageKey) localStorage.setItem(this.dndStorageKey, String(dnd)); }
+    catch { this.update({ error: "Не удалось сохранить режим DND в браузере" }); }
+    if (dnd && this.snapshot.callState === "incoming") {
+      void this.reject().catch((error) => this.update({ error: this.errorMessage(error) }));
+    }
+  }
+
+  async setAudioPreferences(preferences: AudioPreferences): Promise<void> {
+    const previous = this.audioPreferences;
+    try {
+      await this.ringtone.configure(preferences.outputId, preferences.ringtoneId);
+      if (this.remoteAudio) await setAudioOutput(this.remoteAudio, preferences.outputId);
+      this.audioPreferences = { ...preferences };
+    } catch (error) {
+      if (this.remoteAudio) await setAudioOutput(this.remoteAudio, previous.outputId).catch(() => undefined);
+      await this.ringtone.configure(previous.outputId, previous.ringtoneId).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  async testRingtone(): Promise<void> {
+    if (this.activeCall) throw new Error("Проверка звука доступна вне звонка");
+    await this.ringtone.start(true);
+  }
+
+  stopAudioTest(): void {
+    if (!this.activeCall) this.stopRingtone();
+  }
+
+  async resumeAudio(): Promise<void> {
+    try {
+      if (this.snapshot.callState === "incoming") await this.ringtone.start();
+      else if (this.remoteAudio?.srcObject) await this.remoteAudio.play();
+      await this.ringtone.unlock();
+      this.update({ audioPlaybackBlocked: false });
+    } catch (error) {
+      this.update({ audioPlaybackBlocked: true, error: this.errorMessage(error) });
+    }
   }
 
   async start(): Promise<void> {
@@ -104,6 +162,7 @@ export class SipPhone {
     document.removeEventListener("keydown", this.unlockRingtone);
     await this.endCall("cancelled").catch(() => undefined);
     await this.disconnectCurrentAgent();
+    this.ringtone.dispose();
     this.update({ registration: "offline", callState: "idle" });
   }
 
@@ -114,7 +173,9 @@ export class SipPhone {
     if (this.activeCall) throw new Error("Уже есть активный звонок");
 
     const target = this.makeTarget(destination);
+    this.stopRingtone();
     const inviterOptions: InviterOptions = {
+      earlyMedia: true,
       sessionDescriptionHandlerOptions: this.mediaOptions()
     };
     const inviter = new Inviter(this.userAgent, target, inviterOptions);
@@ -133,6 +194,10 @@ export class SipPhone {
     try {
       await inviter.invite({
         requestDelegate: {
+          onProgress: (response) => {
+            // SIP.js applies provisional SDP before notifying this delegate.
+            if (response.message.statusCode === 183) this.attachRemoteMedia(inviter);
+          },
           onRedirect: (response) => { active.hangupReason = this.sipResponseReason(response.message.statusCode); },
           onReject: (response) => { active.hangupReason = this.sipResponseReason(response.message.statusCode); }
         }
@@ -163,7 +228,7 @@ export class SipPhone {
     call.requestedStatus = "rejected";
     this.stopRingtone();
     if (call.session.state === SessionState.Initial) {
-      await call.session.reject();
+      await call.session.reject({ statusCode: 486 });
     }
   }
 
@@ -364,6 +429,10 @@ export class SipPhone {
   }
 
   private handleIncoming(invitation: Invitation): void {
+    if (this.snapshot.dnd) {
+      void this.rejectDndCall(invitation);
+      return;
+    }
     if (this.activeCall) {
       void invitation.reject({ statusCode: 486 });
       return;
@@ -385,6 +454,21 @@ export class SipPhone {
     this.startRingtone();
   }
 
+  private async rejectDndCall(invitation: Invitation): Promise<void> {
+    const now = new Date().toISOString();
+    try {
+      await invitation.reject({ statusCode: 486 });
+      await api.saveCall({
+        id: crypto.randomUUID(), direction: "incoming",
+        remote: invitation.remoteIdentity.uri.user || invitation.remoteIdentity.uri.toString(),
+        startedAt: now, endedAt: new Date().toISOString(), durationSeconds: 0, status: "rejected"
+      });
+      this.update({ historyRevision: this.snapshot.historyRevision + 1 });
+    } catch (error) {
+      this.update({ error: this.errorMessage(error) });
+    }
+  }
+
   private createActiveCall(session: Session, direction: "incoming" | "outgoing", remote: string): ActiveCall {
     return {
       id: crypto.randomUUID(),
@@ -401,6 +485,14 @@ export class SipPhone {
   private bindSession(call: ActiveCall): void {
     call.session.delegate = {
       ...call.session.delegate,
+      onSessionDescriptionHandler: (handler) => {
+        const peerConnection = (handler as { peerConnection?: RTCPeerConnection }).peerConnection;
+        if (!peerConnection) return;
+        call.mediaCleanup?.();
+        const onTrack = () => this.attachRemoteMedia(call.session, peerConnection);
+        peerConnection.addEventListener("track", onTrack);
+        call.mediaCleanup = () => peerConnection.removeEventListener("track", onTrack);
+      },
       onBye: (bye) => {
         // A custom onBye delegate replaces SIP.js automatic 200 OK response.
         void bye.accept().catch((error) => this.update({ error: this.errorMessage(error) }));
@@ -427,17 +519,17 @@ export class SipPhone {
     });
   }
 
-  private attachRemoteMedia(session: Session): void {
-    const peerConnection = this.peerConnection(session);
-    if (!peerConnection || !this.remoteAudio) return;
-    const stream = new MediaStream();
+  private attachRemoteMedia(session: Session, peerConnection = this.peerConnection(session)): void {
+    if (!peerConnection || !this.remoteAudio || this.activeCall?.session !== session) return;
+    const stream = this.remoteAudio.srcObject instanceof MediaStream ? this.remoteAudio.srcObject : new MediaStream();
     peerConnection.getReceivers().forEach((receiver) => {
-      if (receiver.track) stream.addTrack(receiver.track);
+      if (receiver.track?.kind === "audio" && !stream.getTracks().includes(receiver.track)) stream.addTrack(receiver.track);
     });
+    if (!stream.getAudioTracks().length) return;
     this.remoteAudio.srcObject = stream;
     this.remoteAudio.volume = this.snapshot.volume;
     void this.remoteAudio.play().catch(() => {
-      this.update({ error: "Браузер заблокировал автовоспроизведение. Нажмите на страницу и ответьте снова." });
+      if (this.activeCall?.session === session) this.update({ audioPlaybackBlocked: true });
     });
   }
 
@@ -452,63 +544,25 @@ export class SipPhone {
   }
 
   private readonly unlockRingtone = (): void => {
-    const context = this.ringtoneContext ?? new AudioContext();
-    this.ringtoneContext = context;
-    void context.resume().then(() => {
-      document.removeEventListener("pointerdown", this.unlockRingtone);
-      document.removeEventListener("keydown", this.unlockRingtone);
-    }).catch(() => undefined);
+    void this.ringtone.unlock().catch(() => undefined);
   };
 
   private startRingtone(): void {
-    this.stopRingtone();
-    this.unlockRingtone();
-    this.playRingBurst();
-    this.ringtoneInterval = window.setInterval(() => this.playRingBurst(), 3_000);
-  }
-
-  private playRingBurst(): void {
-    const context = this.ringtoneContext;
-    if (!context || !this.activeCall || this.snapshot.callState !== "incoming") return;
-    const gain = context.createGain();
-    gain.gain.setValueAtTime(0.0001, context.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.12, context.currentTime + 0.03);
-    gain.gain.setValueAtTime(0.12, context.currentTime + 0.75);
-    gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.95);
-    gain.connect(context.destination);
-    this.ringtoneOscillators = [440, 480].map((frequency) => {
-      const oscillator = context.createOscillator();
-      oscillator.frequency.value = frequency;
-      oscillator.connect(gain);
-      oscillator.start();
-      oscillator.stop(context.currentTime + 1);
-      return oscillator;
+    void this.ringtone.start().catch((error) => {
+      if (this.snapshot.callState === "incoming") {
+        this.update({ audioPlaybackBlocked: true, error: `Рингтон: ${this.errorMessage(error)}` });
+      }
     });
-    this.ringtoneStopTimer = window.setTimeout(() => {
-      this.ringtoneOscillators = [];
-      gain.disconnect();
-    }, 1_100);
   }
 
   private stopRingtone(): void {
-    window.clearInterval(this.ringtoneInterval);
-    window.clearTimeout(this.ringtoneStopTimer);
-    this.ringtoneInterval = undefined;
-    this.ringtoneStopTimer = undefined;
-    this.ringtoneOscillators.forEach((oscillator) => {
-      try {
-        oscillator.stop();
-      } catch {
-        // The oscillator may already have reached its scheduled stop time.
-      }
-      oscillator.disconnect();
-    });
-    this.ringtoneOscillators = [];
+    this.ringtone.stop();
   }
 
   private async finalizeCall(call: ActiveCall): Promise<void> {
     if (call.persisted) return;
     call.persisted = true;
+    call.mediaCleanup?.();
     await Promise.resolve();
     const endedAt = new Date();
     const status = this.resolveStatus(call);
@@ -530,6 +584,7 @@ export class SipPhone {
     if (this.activeCall?.id === call.id) this.activeCall = undefined;
     this.update({
       callState: "idle",
+      audioPlaybackBlocked: false,
       direction: undefined,
       remote: undefined,
       muted: false,
@@ -565,7 +620,7 @@ export class SipPhone {
 
   private mediaOptions() {
     return {
-      constraints: { audio: true, video: false },
+      constraints: { audio: microphoneConstraints(this.audioPreferences.inputId), video: false },
       peerConnectionConfiguration: { iceServers: this.credentials?.iceServers ?? [] }
     };
   }
