@@ -402,6 +402,8 @@ export class SipPhone {
     call.session.delegate = {
       ...call.session.delegate,
       onBye: (bye) => {
+        // A custom onBye delegate replaces SIP.js automatic 200 OK response.
+        void bye.accept().catch((error) => this.update({ error: this.errorMessage(error) }));
         const reasonHeader = bye.request.getHeader("Reason");
         call.hangupReason = this.reasonHeaderText(reasonHeader) ?? "Разговор завершён удалённой стороной";
       },
