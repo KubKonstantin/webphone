@@ -1,25 +1,17 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { runInNewContext } from "node:vm";
-import ts from "typescript";
-
-const source = readFileSync(new URL("../src/sip/SipPhone.ts", import.meta.url), "utf8");
-const { outputText } = ts.transpileModule(source, {
-  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 }
-});
+import { loadSource } from "./helpers.mjs";
 
 for (const direction of ["incoming", "outgoing"]) {
   for (const reason of [undefined, 'Q.850;cause=17;text="User busy"']) {
     test(`remote BYE: ${direction}, ${reason ?? "no Reason"}`, async () => {
       const saved = [];
-      const exports = {};
-      runInNewContext(outputText, {
-        exports,
-        require: (name) => name === "sip.js"
-          ? { SessionState: { Established: "Established", Terminated: "Terminated" } }
-          : { api: { saveCall: async (record) => saved.push(record) } },
-        window: { clearInterval() {}, clearTimeout() {} }
+      const exports = loadSource("sip/SipPhone.ts", {
+        modules: {
+          "sip.js": { SessionState: { Established: "Established", Terminated: "Terminated" } },
+          "../api": { api: { saveCall: async (record) => saved.push(record) } }
+        },
+        globals: { window: { clearInterval() {}, clearTimeout() {} } }
       });
       const phone = new exports.SipPhone();
       let stateListener;

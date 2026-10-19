@@ -1,4 +1,5 @@
 import { ArrowDownLeft, ArrowUpRight, CheckCircle2, Clock3, PhoneMissed, XCircle } from "lucide-react";
+import { CopyNumber } from "./CopyNumber";
 import type { CallRecord } from "../api";
 
 const statusLabels: Record<CallRecord["status"], string> = {
@@ -40,19 +41,19 @@ export function CallHistory({ records, loading, onRedial }: {
         {loading && <div className="empty-state">Загрузка…</div>}
         {!loading && records.length === 0 && <div className="empty-state">Здесь появятся совершённые и принятые звонки.</div>}
         {records.map((record) => (
-          <button className="history-item" key={record.id} onClick={() => onRedial(record.remote)}>
+          <div className="history-item" key={record.id}>
             <span className={`history-icon ${record.status}`}>
               {record.direction === "incoming" ? <ArrowDownLeft size={18} /> : <ArrowUpRight size={18} />}
             </span>
             <span className="history-main">
-              <strong>{record.remote}</strong>
+              <span className="number-with-copy"><button className="history-number" title="Набрать номер" onClick={() => onRedial(record.remote)}>{record.remote}</button><CopyNumber number={record.remote} /></span>
               <span>{new Intl.DateTimeFormat("ru-RU", { dateStyle: "short", timeStyle: "short" }).format(new Date(record.startedAt))}</span>
             </span>
             <span className="history-meta">
               <span className="status-line"><StatusIcon status={record.status} /> {statusLabels[record.status]}</span>
               <span><Clock3 size={14} /> {formatDuration(record.durationSeconds)}</span>
             </span>
-          </button>
+          </div>
         ))}
       </div>
     </section>
