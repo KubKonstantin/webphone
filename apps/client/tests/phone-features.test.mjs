@@ -36,13 +36,17 @@ function setup() {
   });
   const phone = new SipPhone();
   let ringtoneStarts = 0;
-  phone.ringtone = { stop() {}, start() { ringtoneStarts++; return Promise.resolve(); }, async configure() {} };
-  return { phone, records, storage, ringtoneStarts: () => ringtoneStarts };
+  let endedSounds = 0;
+  const notifications = [];
+  phone.notifications.show = (...args) => notifications.push({ type: "show", args });
+  phone.notifications.close = (...args) => notifications.push({ type: "close", args });
+  phone.ringtone = { stop() {}, start() { ringtoneStarts++; return Promise.resolve(); }, async configure() {}, async playEnded() { endedSounds++; } };
+  return { phone, records, storage, ringtoneStarts: () => ringtoneStarts, endedSounds: () => endedSounds, notifications };
 }
 const flush = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
 
 test("DND rejects incoming calls with 486, logs them, and does not disturb an active call", async () => {
-  const { phone, records, ringtoneStarts } = setup();
+  const { phone, records, ringtoneStarts, notifications } = setup();
   phone.setDnd(true);
   const current = { id: "existing" };
   phone.activeCall = current;
@@ -51,6 +55,7 @@ test("DND rejects incoming calls with 486, logs them, and does not disturb an ac
   await flush();
   assert.equal(invitation.rejected[0].statusCode, 486);
   assert.equal(ringtoneStarts(), 0);
+  assert.equal(notifications.filter((event) => event.type === "show").length, 0);
   assert.equal(records[0].status, "rejected");
   assert.equal(records[0].remote, "101");
   assert.equal(phone.activeCall, current);
@@ -136,4 +141,40 @@ test("failed output selection rolls back the conversation and ringtone routes", 
   await assert.rejects(phone.setAudioPreferences({ inputId: "", outputId: "new", ringtoneId: "extra" }));
   assert.deepEqual(selected, ["old"]);
   assert.equal(phone.audioPreferences.outputId, "old");
+});
+
+test("incoming notifications close on reject and cancel; neither plays the remote-BYE tone", async () => {
+  for (const end of ["reject", "cancel"]) {
+    const { phone, notifications, endedSounds } = setup();
+    const invitation = new Invitation();
+    phone.handleIncoming(invitation);
+    assert.equal(notifications.filter((event) => event.type === "show").length, 1);
+    if (end === "reject") await phone.reject();
+    else { invitation.delegate.onCancel(); invitation.listener(SessionState.Terminated); }
+    await flush();
+    assert.ok(notifications.some((event) => event.type === "close" && event.args[0] === "call-1"));
+    assert.equal(endedSounds(), 0);
+  }
+});
+
+test("answer closes the notification before accepting the invitation", async () => {
+  const { phone, notifications, endedSounds } = setup();
+  const invitation = new Invitation();
+  invitation.accept = async () => {
+    assert.ok(notifications.some((event) => event.type === "close" && event.args[0] === "call-1"));
+  };
+  phone.handleIncoming(invitation);
+  await phone.answer();
+  assert.equal(endedSounds(), 0);
+});
+
+test("logout suppresses the remote-BYE completion sound", async () => {
+  const { phone, endedSounds } = setup();
+  const invitation = new Invitation();
+  phone.handleIncoming(invitation);
+  phone.disposed = true;
+  invitation.delegate.onBye({ accept: async () => {}, request: { getHeader: () => undefined } });
+  invitation.listener(SessionState.Terminated);
+  await flush();
+  assert.equal(endedSounds(), 0);
 });

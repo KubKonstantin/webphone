@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Headphones, Mic, Volume2 } from "lucide-react";
 import { loadAudioPreferences, microphoneConstraints, reconcileDevices, sameOutput, type AudioPreferences } from "../audio/devices";
+import { isRingtoneTone, ringtoneChoices } from "../audio/tones";
 import type { SipPhone } from "../sip/SipPhone";
 
 type MicrophoneState = "idle" | "checking" | "permission" | "listening" | "ready" | "silent" | "error";
@@ -24,7 +25,7 @@ function microphoneError(error: unknown): string {
   return error instanceof Error ? error.message : "Не удалось проверить микрофон";
 }
 
-export function AudioSetup({ phone, storageKey, busy }: { phone: SipPhone; storageKey: string; busy: boolean }) {
+export function AudioSetup({ phone, storageKey, busy, children }: { phone: SipPhone; storageKey: string; busy: boolean; children?: ReactNode }) {
   const [preferences, setPreferences] = useState(() => {
     const saved = loadAudioPreferences(storageKey);
     return typeof HTMLMediaElement.prototype.setSinkId === "function" ? saved : { ...saved, outputId: "", ringtoneId: "" };
@@ -178,6 +179,7 @@ export function AudioSetup({ phone, storageKey, busy }: { phone: SipPhone; stora
   }, [busy, stopCheck]);
 
   const select = async (field: keyof AudioPreferences, value: string) => {
+    if (field === "ringtoneTone" && !isRingtoneTone(value)) return;
     setError(undefined);
     const next = { ...preferencesRef.current, [field]: value };
     if (next.ringtoneId && sameOutput(next.outputId, next.ringtoneId, devices)) next.ringtoneId = "";
@@ -237,16 +239,24 @@ export function AudioSetup({ phone, storageKey, busy }: { phone: SipPhone; stora
             </select>
           </label>
         </div>
+        <div className="ringtone-settings">
+          <label>Мелодия входящего звонка
+            <select value={preferences.ringtoneTone} disabled={busy || routing || testingSound} onChange={(event) => void select("ringtoneTone", event.target.value)}>
+              {ringtoneChoices.map((tone) => <option key={tone.id} value={tone.id}>{tone.label}</option>)}
+            </select>
+          </label>
+          <button type="button" className="secondary-button" disabled={busy || routing || testingSound} onClick={() => void testSound()}><Volume2 size={16} /> Прослушать рингтон</button>
+        </div>
         {!supportsOutput && <p className="audio-note">Этот браузер воспроизводит звук только через системное устройство. Выбор второго выхода недоступен.</p>}
         <div className="audio-check-row">
           <div className="microphone-check"><span role="status">{microphoneLabels[microphone]}</span><meter min="0" max="100" value={level} aria-label="Уровень микрофона" /></div>
           <button className="secondary-button" disabled={busy || routing || microphone === "checking" || microphone === "listening"} onClick={() => void checkMicrophone()}><Mic size={16} /> Проверить микрофон</button>
-          <button className="secondary-button" disabled={busy || routing || testingSound} onClick={() => void testSound()}><Volume2 size={16} /> Проверить рингтон</button>
           {supportsOutput && typeof (navigator.mediaDevices as OutputSelector | undefined)?.selectAudioOutput === "function" && <button className="secondary-button" disabled={busy || routing} onClick={() => void authorizeOutput()}>Разрешить аудиоустройство</button>}
         </div>
         <p className="audio-note">Проверка микрофона длится 6 секунд. Звук не записывается и не передаётся. {busy ? "Настройки и проверка доступны после завершения звонка." : "Настройки сохраняются в этом браузере."}</p>
         {notice && <p className="audio-note" role="status">{notice}</p>}
         {error && <div className="error-banner" role="alert">{error}</div>}
+        {children}
       </div>
     </details>
   );

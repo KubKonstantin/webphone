@@ -15,6 +15,8 @@ import {
   Volume2
 } from "lucide-react";
 import { api, type CallRecord, type User } from "./api";
+import { WhatsNew } from "./components/WhatsNew";
+import { NotificationSettings } from "./components/NotificationSettings";
 import { AudioSetup } from "./components/AudioSetup";
 import { CallHistory } from "./components/CallHistory";
 import { DialPad } from "./components/DialPad";
@@ -182,7 +184,9 @@ export default function App() {
         </div>
       </header>
 
-      <AudioSetup key={user.login} phone={phone} storageKey={`web-phone.audio.${user.login}`} busy={inCall} />
+      <AudioSetup key={user.login} phone={phone} storageKey={`web-phone.audio.${user.login}`} busy={inCall}>
+        <NotificationSettings notifications={phone.notifications} />
+      </AudioSetup>
       <div className="workspace">
         <section className="phone-panel panel">
           <div className="phone-status">
@@ -279,6 +283,7 @@ export default function App() {
           )}
         </div>
       </div>
+      <WhatsNew />
     </main>
   );
 }

@@ -10,6 +10,7 @@ import {
   type InviterOptions,
   type UserAgentOptions
 } from "sip.js";
+import { CallNotifications } from "../notifications/CallNotifications";
 import { Ringtone } from "../audio/Ringtone";
 import { defaultAudioPreferences, microphoneConstraints, setAudioOutput, type AudioPreferences } from "../audio/devices";
 import { ApiError, api, type CallRecord, type CallStatus, type SipCredentials } from "../api";
@@ -50,6 +51,7 @@ type ActiveCall = {
   persisted: boolean;
   hangupReason?: string;
   mediaCleanup?: () => void;
+  remoteBye?: boolean;
 };
 
 type SessionWithPeerConnection = Session & {
@@ -57,6 +59,7 @@ type SessionWithPeerConnection = Session & {
 };
 
 export class SipPhone {
+  readonly notifications = new CallNotifications();
   private userAgent?: UserAgent;
   private registerer?: Registerer;
   private credentials?: SipCredentials;
@@ -99,6 +102,7 @@ export class SipPhone {
   }
 
   configureUser(login: string): void {
+    this.notifications.configureUser(login);
     this.dndStorageKey = `web-phone.dnd.${login}`;
     try { this.update({ dnd: localStorage.getItem(this.dndStorageKey) === "true" }); }
     catch { this.update({ dnd: false }); }
@@ -116,12 +120,12 @@ export class SipPhone {
   async setAudioPreferences(preferences: AudioPreferences): Promise<void> {
     const previous = this.audioPreferences;
     try {
-      await this.ringtone.configure(preferences.outputId, preferences.ringtoneId);
+      await this.ringtone.configure(preferences.outputId, preferences.ringtoneId, preferences.ringtoneTone);
       if (this.remoteAudio) await setAudioOutput(this.remoteAudio, preferences.outputId);
       this.audioPreferences = { ...preferences };
     } catch (error) {
       if (this.remoteAudio) await setAudioOutput(this.remoteAudio, previous.outputId).catch(() => undefined);
-      await this.ringtone.configure(previous.outputId, previous.ringtoneId).catch(() => undefined);
+      await this.ringtone.configure(previous.outputId, previous.ringtoneId, previous.ringtoneTone).catch(() => undefined);
       throw error;
     }
   }
@@ -155,6 +159,7 @@ export class SipPhone {
 
   async stop(): Promise<void> {
     this.disposed = true;
+    this.notifications.close();
     window.clearTimeout(this.refreshTimer);
     window.clearTimeout(this.reconnectTimer);
     this.stopRingtone();
@@ -214,6 +219,7 @@ export class SipPhone {
     if (!call || !(call.session instanceof Invitation) || call.session.state !== SessionState.Initial) {
       return;
     }
+    this.notifications.close(call.id);
     this.stopRingtone();
     const options: InvitationAcceptOptions = {
       sessionDescriptionHandlerOptions: this.mediaOptions()
@@ -225,6 +231,7 @@ export class SipPhone {
   async reject(): Promise<void> {
     const call = this.activeCall;
     if (!call || !(call.session instanceof Invitation)) return;
+    this.notifications.close(call.id);
     call.requestedStatus = "rejected";
     this.stopRingtone();
     if (call.session.state === SessionState.Initial) {
@@ -235,6 +242,7 @@ export class SipPhone {
   async endCall(status: CallStatus = "cancelled"): Promise<void> {
     const call = this.activeCall;
     if (!call) return;
+    this.notifications.close(call.id);
     call.requestedStatus = status;
     this.stopRingtone();
     this.update({ callState: "ending" });
@@ -451,6 +459,7 @@ export class SipPhone {
       hangupReason: undefined,
       error: undefined
     });
+    this.notifications.show(active.id, remote);
     this.startRingtone();
   }
 
@@ -496,6 +505,7 @@ export class SipPhone {
       onBye: (bye) => {
         // A custom onBye delegate replaces SIP.js automatic 200 OK response.
         void bye.accept().catch((error) => this.update({ error: this.errorMessage(error) }));
+        call.remoteBye = true;
         const reasonHeader = bye.request.getHeader("Reason");
         call.hangupReason = this.reasonHeaderText(reasonHeader) ?? "Разговор завершён удалённой стороной";
       },
@@ -562,6 +572,7 @@ export class SipPhone {
   private async finalizeCall(call: ActiveCall): Promise<void> {
     if (call.persisted) return;
     call.persisted = true;
+    this.notifications.close(call.id);
     call.mediaCleanup?.();
     await Promise.resolve();
     const endedAt = new Date();
@@ -579,6 +590,7 @@ export class SipPhone {
       durationSeconds,
       status
     };
+    const wasCurrentCall = this.activeCall?.id === call.id;
     this.stopRingtone();
     this.cleanupMedia();
     if (this.activeCall?.id === call.id) this.activeCall = undefined;
@@ -592,6 +604,11 @@ export class SipPhone {
       hangupReason: call.hangupReason,
       historyRevision: this.snapshot.historyRevision + 1
     });
+    if (wasCurrentCall && call.remoteBye && !this.disposed && !this.activeCall) {
+      void this.ringtone.playEnded().catch(() => {
+        if (!this.activeCall && !this.disposed) this.update({ error: "Не удалось воспроизвести звук завершения вызова. Проверьте настройки звука." });
+      });
+    }
     await api.saveCall(record).catch((error) => this.update({ error: `История: ${this.errorMessage(error)}` }));
 
     if (this.pendingCredentials && !this.disposed) {
