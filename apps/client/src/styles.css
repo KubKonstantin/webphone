@@ -194,3 +194,14 @@ button:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px
 .whats-new > div { margin-top: 12px; padding: 16px 20px; max-width: 640px; border: 1px solid #293244; border-radius: 12px; background: #141923; line-height: 1.6; }
 .whats-new strong { color: #dce4f1; }
 .whats-new ul { margin-bottom: 0; padding-left: 18px; }
+
+.app-actions { width: min(1180px, calc(100% - 32px)); margin: 20px auto 0; }
+.app-action-buttons { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.app-action-buttons button { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; }
+.app-mode { color: #74e0b0; font-size: 13px; }
+.login-card .app-actions { width: 100%; margin-top: 20px; }
+.login-card .app-action-buttons { justify-content: center; }
+.login-card .audio-note { font-size: 12px; margin: 10px 0 0; }
+.sip-link-message { display: flex; align-items: start; gap: 8px; padding: 12px 14px; border-radius: 12px; margin-bottom: 16px; background: rgba(108,224,172,.08); color: #a6e7cb; font-size: 13px; line-height: 1.5; text-align: left; overflow-wrap: anywhere; }
+.sip-link-message span { flex: 1; min-width: 0; }
+.sip-link-message button { border: 0; background: transparent; color: #a6e7cb; font-size: 20px; padding: 0 4px; }
