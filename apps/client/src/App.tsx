@@ -15,6 +15,9 @@ import {
   Volume2
 } from "lucide-react";
 import { api, type CallRecord, type User } from "./api";
+import { AppActions } from "./components/AppActions";
+import { useAppInstall } from "./pwa/useAppInstall";
+import { useSipLinks } from "./pwa/useSipLinks";
 import { WhatsNew } from "./components/WhatsNew";
 import { NotificationSettings } from "./components/NotificationSettings";
 import { AudioSetup } from "./components/AudioSetup";
@@ -75,6 +78,8 @@ export default function App() {
   const [elapsed, setElapsed] = useState(0);
   const audioRef = useRef<HTMLAudioElement>(null);
   const phone = useMemo(() => new SipPhone(), []);
+  const installation = useAppInstall();
+  const sipLink = useSipLinks(!!user, snapshot.callState !== "idle", setDestination);
 
   useEffect(() => {
     api.me()
@@ -125,6 +130,7 @@ export default function App() {
   };
 
   const logout = async () => {
+    sipLink.dismiss();
     await phone.stop();
     await api.logout();
     window.location.reload();
@@ -143,9 +149,12 @@ export default function App() {
             <strong>Web Phone</strong>
           </div>
           <p>Безопасный сервис совершения звонков от VoIP-hub. Авторизуйтесь с вашей корпоративной учетной записью. Если у вас возникли проблемы, пожалуйста, обратитесь в техническую поддержку https://helpdesk.docdoc.ru/</p>
-          <button className="primary-button large" onClick={() => { window.location.href = "/api/auth/login"; }}>
+          {sipLink.pending && <p className="sip-link-message" role="status">После входа будет подставлен номер {sipLink.pending}.</p>}
+          {sipLink.message && <p className="sip-link-message" role="status">{sipLink.message}</p>}
+          <button className="primary-button large" onClick={() => { window.location.href = sipLink.loginUrl; }}>
             <ShieldCheck size={20} /> Войти через Casdoor
           </button>
+          <AppActions installation={installation} />
         </div>
       </main>
     );
@@ -184,6 +193,7 @@ export default function App() {
         </div>
       </header>
 
+      <AppActions installation={installation} />
       <AudioSetup key={user.login} phone={phone} storageKey={`web-phone.audio.${user.login}`} busy={inCall}>
         <NotificationSettings notifications={phone.notifications} />
       </AudioSetup>
@@ -195,6 +205,10 @@ export default function App() {
             <p>{snapshot.callState === "active" ? formatTimer(elapsed) : snapshot.sipIdentity ?? "SIP не подключён"}</p>
           </div>
 
+          {(sipLink.pending || sipLink.message) && <div className="sip-link-message" role="status">
+            <span>{sipLink.pending ? `Номер из SIP-ссылки: ${sipLink.pending}. Подставим после завершения текущего звонка.` : sipLink.message}</span>
+            <button type="button" onClick={sipLink.dismiss} aria-label="Убрать сообщение и отложенный номер">×</button>
+          </div>}
           {snapshot.dnd && <div className="dnd-banner">Не беспокоить: входящие отклоняются. Исходящие звонки доступны.</div>}
           {snapshot.audioPlaybackBlocked && <button className="secondary-button audio-retry" onClick={() => void phone.resumeAudio()}>Включить звук</button>}
           {snapshot.error && <div className="error-banner">{snapshot.error}</div>}

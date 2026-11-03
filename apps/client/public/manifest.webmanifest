@@ -1,0 +1,20 @@
+{
+  "id": "/",
+  "name": "Web Phone",
+  "short_name": "Web Phone",
+  "description": "Корпоративный SIP-телефон: звонки, контакты и история вызовов",
+  "lang": "ru",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0c0f15",
+  "theme_color": "#10131a",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "protocol_handlers": [{ "protocol": "sip", "url": "/?sip=%s" }],
+  "launch_handler": { "client_mode": "focus-existing" },
+  "prefer_related_applications": false
+}
