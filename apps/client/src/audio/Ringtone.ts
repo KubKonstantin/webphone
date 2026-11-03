@@ -1,4 +1,5 @@
 import { setAudioOutput } from "./devices";
+import { callEndedNotes, ringtoneNotes, type RingtoneTone } from "./tones";
 
 /** One synthesized stream, routed only to the chosen ringtone outputs. */
 export class Ringtone {
@@ -13,11 +14,13 @@ export class Ringtone {
   private playing = false;
   private outputId = "";
   private extraId = "";
+  private tone: RingtoneTone = "classic";
 
-  async configure(outputId: string, extraId: string): Promise<void> {
+  async configure(outputId: string, extraId: string, tone: RingtoneTone = "classic"): Promise<void> {
     if (this.players[0]) await setAudioOutput(this.players[0], outputId);
     if (extraId) await setAudioOutput(this.players[1] ?? new Audio(), extraId);
     this.outputId = outputId;
+    this.tone = tone;
     this.extraId = extraId && extraId !== outputId ? extraId : "";
     if (!this.extraId) this.players[1]?.pause();
   }
@@ -29,6 +32,14 @@ export class Ringtone {
   }
 
   async start(test = false): Promise<void> {
+    await this.play("ringtone", test);
+  }
+
+  async playEnded(): Promise<void> {
+    await this.play("ended", true);
+  }
+
+  private async play(kind: "ringtone" | "ended", test: boolean): Promise<void> {
     this.stop();
     const generation = this.generation;
     this.prepare();
@@ -48,20 +59,22 @@ export class Ringtone {
       window.clearTimeout(resumeTimer);
     }
     if (generation !== this.generation) return;
-    const ids = [this.outputId, ...(this.extraId ? [this.extraId] : [])];
+    const ids = [this.outputId, ...(kind === "ringtone" && this.extraId ? [this.extraId] : [])];
     // A failure on the additional device must not silence the primary ringtone.
     const results = await Promise.allSettled(ids.map(async (id, index) => {
       const player = this.players[index]!;
       await setAudioOutput(player, id);
       if (generation !== this.generation) return;
       await player.play();
-      if (generation !== this.generation) player.pause();
+      // stop() already pauses this player. A late play() resolution must not pause a newer call.
     }));
     if (generation !== this.generation) return;
     this.playing = true;
-    this.burst();
-    if (test) this.testTimer = window.setTimeout(() => this.stop(), 1200);
-    else this.interval = window.setInterval(() => this.burst(), 3000);
+    this.burst(kind);
+    if (test) this.testTimer = window.setTimeout(() => {
+      if (generation === this.generation) this.stop();
+    }, kind === "ended" ? 700 : 1200);
+    else this.interval = window.setInterval(() => this.burst("ringtone"), 3000);
     const failure = results.find((result) => result.status === "rejected");
     if (failure?.status === "rejected") throw failure.reason;
   }
@@ -103,24 +116,29 @@ export class Ringtone {
     this.gains = [];
   }
 
-  private burst(): void {
+  private burst(kind: "ringtone" | "ended"): void {
     const context = this.context;
     if (!context || !this.playing || !this.destination) return;
     this.clearBurst();
-    const gain = context.createGain();
-    gain.gain.setValueAtTime(0.0001, context.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.12, context.currentTime + 0.03);
-    gain.gain.setValueAtTime(0.12, context.currentTime + 0.75);
-    gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.95);
-    gain.connect(this.destination);
-    this.gains.push(gain);
-    this.oscillators = [440, 480].map((frequency) => {
-      const oscillator = context.createOscillator();
-      oscillator.frequency.value = frequency;
-      oscillator.connect(gain);
-      oscillator.start();
-      oscillator.stop(context.currentTime + 1);
-      return oscillator;
-    });
+    const notes = kind === "ended" ? callEndedNotes : ringtoneNotes[this.tone];
+    for (const note of notes) {
+      const start = context.currentTime + note.offset;
+      const gain = context.createGain();
+      gain.gain.setValueAtTime(0.0001, context.currentTime);
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(kind === "ended" ? 0.08 : 0.12, start + 0.02);
+      gain.gain.setValueAtTime(kind === "ended" ? 0.08 : 0.12, start + note.duration - 0.06);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + note.duration);
+      gain.connect(this.destination);
+      this.gains.push(gain);
+      note.frequencies.forEach((frequency) => {
+        const oscillator = context.createOscillator();
+        oscillator.frequency.value = frequency;
+        oscillator.connect(gain);
+        oscillator.start(start);
+        oscillator.stop(start + note.duration);
+        this.oscillators.push(oscillator);
+      });
+    }
   }
 }

@@ -1,10 +1,13 @@
+import { isRingtoneTone, type RingtoneTone } from "./tones";
+
 export type AudioPreferences = {
   inputId: string;
   outputId: string;
   ringtoneId: string;
+  ringtoneTone: RingtoneTone;
 };
 
-export const defaultAudioPreferences: AudioPreferences = { inputId: "", outputId: "", ringtoneId: "" };
+export const defaultAudioPreferences: AudioPreferences = { inputId: "", outputId: "", ringtoneId: "", ringtoneTone: "classic" };
 
 export function loadAudioPreferences(storageKey: string): AudioPreferences {
   try {
@@ -12,7 +15,8 @@ export function loadAudioPreferences(storageKey: string): AudioPreferences {
     return {
       inputId: typeof stored?.inputId === "string" ? stored.inputId : "",
       outputId: typeof stored?.outputId === "string" ? stored.outputId : "",
-      ringtoneId: typeof stored?.ringtoneId === "string" ? stored.ringtoneId : ""
+      ringtoneId: typeof stored?.ringtoneId === "string" ? stored.ringtoneId : "",
+      ringtoneTone: isRingtoneTone(stored?.ringtoneTone) ? stored.ringtoneTone : "classic"
     };
   } catch {
     return { ...defaultAudioPreferences };
@@ -38,6 +42,7 @@ export function sameOutput(a: string, b: string, devices: MediaDeviceInfo[]): bo
 export function reconcileDevices(preferences: AudioPreferences, devices: MediaDeviceInfo[]): AudioPreferences {
   const available = (id: string, kind: MediaDeviceKind) => !id || devices.some((device) => device.kind === kind && device.deviceId === id);
   const next = {
+    ...preferences,
     inputId: available(preferences.inputId, "audioinput") ? preferences.inputId : "",
     outputId: available(preferences.outputId, "audiooutput") ? preferences.outputId : "",
     ringtoneId: available(preferences.ringtoneId, "audiooutput") ? preferences.ringtoneId : ""

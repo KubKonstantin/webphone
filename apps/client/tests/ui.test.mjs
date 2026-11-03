@@ -48,7 +48,7 @@ function setup() {
   };
   Object.defineProperty(window.navigator, "mediaDevices", { value: media });
   const globals = { window, document: window.document, navigator: window.navigator, localStorage: window.localStorage, HTMLMediaElement: window.HTMLMediaElement, AudioContext, DOMException: window.DOMException };
-  const load = (path) => loadSource(path, { globals, modules: { react: React, "react/jsx-runtime": jsx, "lucide-react": icons } });
+  const load = (path, extraGlobals = {}) => loadSource(path, { globals: { ...globals, ...extraGlobals }, modules: { react: React, "react/jsx-runtime": jsx, "lucide-react": icons } });
   return { dom, window, root, load, media, streams, contexts, frames, timers };
 }
 const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
@@ -176,6 +176,53 @@ test("phonebook copy preserves the selected number and does not initiate a call"
   assert.deepEqual(copied, ["+79991234567"]);
   assert.equal(calls, 0);
   assert.match(env.window.document.body.textContent, /Номер скопирован/);
+  await act(async () => env.root.unmount());
+  env.dom.window.close();
+});
+
+test("ringtone selection persists and preview uses the selected melody", async () => {
+  const env = setup();
+  const { AudioSetup } = env.load("components/AudioSetup.tsx");
+  const phone = fakePhone();
+  let preview;
+  phone.testRingtone = async () => { preview = phone.settings.at(-1).ringtoneTone; };
+  await act(async () => { env.root.render(React.createElement(AudioSetup, { phone, storageKey: "audio", busy: false })); await flush(); });
+  const select = env.window.document.querySelector(".ringtone-settings select");
+  assert.equal(select.value, "classic");
+  await act(async () => { select.value = "melody"; select.dispatchEvent(new env.window.Event("change", { bubbles: true })); await flush(); });
+  assert.equal(JSON.parse(env.window.localStorage.getItem("audio")).ringtoneTone, "melody");
+  await act(async () => { env.window.document.querySelector(".ringtone-settings button").click(); await flush(); });
+  assert.equal(preview, "melody");
+  await act(async () => { env.root.render(null); await flush(); });
+  await act(async () => { env.root.render(React.createElement(AudioSetup, { phone, storageKey: "audio", busy: false })); await flush(); });
+  assert.equal(env.window.document.querySelector(".ringtone-settings select").value, "melody");
+  await act(async () => env.root.unmount());
+  env.dom.window.close();
+});
+
+test("notification settings request permission only on click and reflect revoked permission on focus", async () => {
+  const env = setup();
+  Object.defineProperty(env.window, "isSecureContext", { value: true });
+  let requests = 0;
+  class Notification {
+    static permission = "default";
+    static async requestPermission() { requests++; return this.permission = "granted"; }
+  }
+  const { CallNotifications } = env.load("notifications/CallNotifications.ts", { Notification });
+  const { NotificationSettings } = env.load("components/NotificationSettings.tsx");
+  const notifications = new CallNotifications();
+  notifications.configureUser("alice");
+  await act(async () => { env.root.render(React.createElement(NotificationSettings, { notifications })); await flush(); });
+  assert.equal(requests, 0);
+  const button = env.window.document.querySelector("button");
+  assert.equal(button.textContent, "Включить уведомления");
+  await act(async () => { button.click(); await flush(); });
+  assert.equal(requests, 1);
+  assert.equal(button.textContent, "Выключить уведомления");
+  await act(async () => { Notification.permission = "denied"; env.window.dispatchEvent(new env.window.Event("focus")); await flush(); });
+  assert.match(env.window.document.body.textContent, /В настройках сайта в Chrome разрешите уведомления/);
+  assert.equal(button.disabled, true);
+  assert.equal(requests, 1);
   await act(async () => env.root.unmount());
   env.dom.window.close();
 });

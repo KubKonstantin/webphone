@@ -178,3 +178,19 @@ button:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px
   .dnd-button { font-size: 12px; padding: 9px; }
 }
 .status-dot.dnd { background: #ff7d86; box-shadow: 0 0 0 4px rgba(255,125,134,.1); }
+
+.ringtone-settings { display: flex; align-items: end; gap: 12px; flex-wrap: wrap; margin-top: 18px; }
+.ringtone-settings label { display: grid; gap: 8px; color: #aeb8c7; font-size: 13px; flex: 1 1 240px; max-width: 360px; }
+.ringtone-settings select { width: 100%; padding: 10px 12px; color: #f5f7fb; background: #10141c; border: 1px solid #364156; border-radius: 10px; font: inherit; }
+.ringtone-settings button { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; }
+.notification-settings { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-top: 20px; padding-top: 18px; border-top: 1px solid #293244; }
+.notification-settings > div { flex: 1 1 280px; }
+.notification-settings strong { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.notification-settings .audio-note { margin-top: 6px; }
+.notification-settings button { font-size: 13px; }
+.notification-error { color: #ff9aa2; font-size: 13px; }
+.page-footer { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 0 0 24px; color: #8d9aaf; font-size: 12px; }
+.whats-new summary { width: fit-content; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.whats-new > div { margin-top: 12px; padding: 16px 20px; max-width: 640px; border: 1px solid #293244; border-radius: 12px; background: #141923; line-height: 1.6; }
+.whats-new strong { color: #dce4f1; }
+.whats-new ul { margin-bottom: 0; padding-left: 18px; }

@@ -14,6 +14,8 @@ for (const direction of ["incoming", "outgoing"]) {
         globals: { window: { clearInterval() {}, clearTimeout() {} } }
       });
       const phone = new exports.SipPhone();
+      let endedSounds = 0;
+      phone.ringtone = { stop() {}, async playEnded() { endedSounds++; } };
       let stateListener;
       const session = { stateChange: { addListener(listener) { stateListener = listener; } } };
       const call = {
@@ -37,6 +39,7 @@ for (const direction of ["incoming", "outgoing"]) {
       assert.equal(snapshot.callState, "idle");
       assert.equal(phone.activeCall, undefined);
       assert.equal(snapshot.hangupReason, reason ? "Абонент занят" : "Разговор завершён удалённой стороной");
+      assert.equal(endedSounds, 1, "one completion sound after a remote BYE, even with duplicate state events");
       assert.equal(saved.length, 1);
       assert.equal(saved[0].status, "completed");
     });
