@@ -73,6 +73,16 @@ export class SipPhone {
   private reconnectTimer?: number;
   private subscribers = new Set<(snapshot: PhoneSnapshot) => void>();
   private disposed = false;
+  private lifecycle = 0;
+  private refreshInFlight?: Promise<void>;
+  private authBlocked = false;
+  private readonly resumeRegistration = () => {
+    if (this.disposed || this.authBlocked || document.visibilityState === "hidden") return;
+    const latest = this.pendingCredentials ?? this.credentials;
+    if (!latest || latest.refreshAfter <= Date.now() || this.snapshot.registration !== "registered") {
+      void this.refreshCredentials();
+    }
+  };
   private snapshot: PhoneSnapshot = {
     registration: "offline",
     dnd: false,
@@ -152,6 +162,11 @@ export class SipPhone {
 
   async start(): Promise<void> {
     this.disposed = false;
+    this.lifecycle++;
+    this.authBlocked = false;
+    window.addEventListener("online", this.resumeRegistration);
+    window.addEventListener("pageshow", this.resumeRegistration);
+    document.addEventListener("visibilitychange", this.resumeRegistration);
     document.addEventListener("pointerdown", this.unlockRingtone, { once: true });
     document.addEventListener("keydown", this.unlockRingtone, { once: true });
     await this.refreshCredentials(true);
@@ -159,6 +174,12 @@ export class SipPhone {
 
   async stop(): Promise<void> {
     this.disposed = true;
+    this.lifecycle++;
+    this.refreshInFlight = undefined;
+    this.pendingCredentials = undefined;
+    window.removeEventListener("online", this.resumeRegistration);
+    window.removeEventListener("pageshow", this.resumeRegistration);
+    document.removeEventListener("visibilitychange", this.resumeRegistration);
     this.notifications.close();
     window.clearTimeout(this.refreshTimer);
     window.clearTimeout(this.reconnectTimer);
@@ -338,29 +359,57 @@ export class SipPhone {
     });
   }
 
-  private async refreshCredentials(initial = false): Promise<void> {
+  private refreshCredentials(initial = false): Promise<void> {
+    if (this.disposed || this.authBlocked) return Promise.resolve();
+    if (this.refreshInFlight) return this.refreshInFlight;
+    const lifecycle = this.lifecycle;
+    const task = this.performCredentialRefresh(initial, lifecycle);
+    this.refreshInFlight = task;
+    void task.finally(() => { if (this.refreshInFlight === task) this.refreshInFlight = undefined; });
+    return task;
+  }
+
+  private async performCredentialRefresh(initial: boolean, lifecycle: number): Promise<void> {
     window.clearTimeout(this.refreshTimer);
+    window.clearTimeout(this.reconnectTimer);
     try {
       const credentials = await api.sipCredentials();
+      if (this.disposed || lifecycle !== this.lifecycle) return;
+      if (credentials.expiresAt <= Date.now()) throw new Error("Получены просроченные SIP-реквизиты");
+      this.update({ sipProfileForbidden: false });
       if (this.activeCall) {
         this.pendingCredentials = credentials;
-        this.scheduleCredentialRefresh(credentials);
-        return;
+        // Stop automatic REGISTER with the old password, preserving the SIP dialog.
+        const old = this.registerer;
+        this.registerer = undefined;
+        await old?.dispose();
+      } else {
+        await this.connect(credentials);
       }
-      await this.connect(credentials);
-      this.update({ sipProfileForbidden: false });
-      this.scheduleCredentialRefresh(credentials);
+      if (!this.disposed && lifecycle === this.lifecycle) this.scheduleCredentialRefresh(credentials);
     } catch (error) {
-      if (error instanceof ApiError && error.status === 403) {
-        this.update({ registration: "error", sipProfileForbidden: true, error: undefined });
-        return;
+      if (this.disposed || lifecycle !== this.lifecycle) return;
+      const forbidden = error instanceof ApiError && error.status === 403;
+      const unauthorized = error instanceof ApiError && error.status === 401;
+      this.authBlocked = forbidden || unauthorized;
+      if (this.authBlocked || (this.credentials && this.credentials.expiresAt <= Date.now())) {
+        this.pendingCredentials = undefined;
+        if (this.activeCall) {
+          const old = this.registerer;
+          this.registerer = undefined;
+          await old?.dispose().catch(() => undefined);
+        } else {
+          await this.disconnectCurrentAgent();
+        }
       }
+      if (this.disposed || lifecycle !== this.lifecycle) return;
       this.update({
-        registration: initial ? "error" : this.snapshot.registration,
-        error: this.errorMessage(error)
+        registration: "error",
+        sipProfileForbidden: forbidden,
+        error: unauthorized ? "Сессия сайта истекла. Войдите в аккаунт заново." : forbidden ? undefined : this.errorMessage(error)
       });
-      if (!this.disposed) {
-        this.refreshTimer = window.setTimeout(() => void this.refreshCredentials(false), 15_000);
+      if (!this.authBlocked) {
+        this.refreshTimer = window.setTimeout(() => void this.refreshCredentials(initial), 15_000);
       }
     }
   }
@@ -371,8 +420,10 @@ export class SipPhone {
   }
 
   private async connect(credentials: SipCredentials): Promise<void> {
+    const lifecycle = this.lifecycle;
     this.update({ registration: "connecting", error: undefined });
     await this.disconnectCurrentAgent();
+    if (this.disposed || lifecycle !== this.lifecycle) return;
     this.credentials = credentials;
 
     const uri = UserAgent.makeURI(`sip:${credentials.sipLogin}@${credentials.sipDomain}`);
@@ -403,14 +454,17 @@ export class SipPhone {
       }
     };
     registerer.stateChange.addListener((state) => {
+      if (this.disposed || this.registerer !== registerer) return;
       if (state === RegistererState.Registered) {
         this.update({ registration: "registered", error: undefined });
       } else if (state === RegistererState.Terminated || state === RegistererState.Unregistered) {
         this.update({ registration: "offline" });
+        this.scheduleReconnect();
       }
     });
 
     await userAgent.start();
+    if (this.disposed || this.userAgent !== userAgent || lifecycle !== this.lifecycle) return;
     await registerer.register();
     // Remove password from the long-lived object after SIP.js copied its options.
     credentials.sipPassword = "";
@@ -422,18 +476,10 @@ export class SipPhone {
 
   private scheduleReconnect(): void {
     window.clearTimeout(this.reconnectTimer);
-    this.reconnectTimer = window.setTimeout(async () => {
-      if (!this.userAgent || this.disposed) return;
-      try {
-        this.update({ registration: "connecting" });
-        await this.userAgent.reconnect();
-        await this.registerer?.register();
-        this.update({ registration: "registered", error: undefined });
-      } catch (error) {
-        this.update({ registration: "error", error: this.errorMessage(error) });
-        this.scheduleReconnect();
-      }
-    }, 4_000);
+    if (this.disposed || this.authBlocked) return;
+    // Fetch a fresh password before reconnecting; register() only sends the request,
+    // registration success is reported by RegistererState.Registered.
+    this.reconnectTimer = window.setTimeout(() => void this.refreshCredentials(), 15_000);
   }
 
   private handleIncoming(invitation: Invitation): void {
@@ -614,6 +660,10 @@ export class SipPhone {
     if (this.pendingCredentials && !this.disposed) {
       const pending = this.pendingCredentials;
       this.pendingCredentials = undefined;
+      if (pending.refreshAfter <= Date.now()) {
+        await this.refreshCredentials();
+        return;
+      }
       await this.connect(pending).catch((error) => this.update({ registration: "error", error: this.errorMessage(error) }));
       this.scheduleCredentialRefresh(pending);
     }
