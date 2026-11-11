@@ -63,11 +63,27 @@ function normalizeWssServer(value: string): string {
   return url.toString();
 }
 
+class SipAuthTimeoutError extends SipCredentialsError {
+  constructor() {
+    super("External SIP auth request timed out", 504);
+  }
+}
+
 export async function fetchSipCredentials(casdoorLogin: string): Promise<SipCredentials> {
+  try {
+    return await requestSipCredentials(casdoorLogin, config.SIP_AUTH_URL);
+  } catch (error) {
+    const fallback = config.SIP_AUTH_FALLBACK_URL;
+    if (!(error instanceof SipAuthTimeoutError) || !fallback || fallback === config.SIP_AUTH_URL) throw error;
+    return requestSipCredentials(casdoorLogin, fallback);
+  }
+}
+
+async function requestSipCredentials(casdoorLogin: string, url: string): Promise<SipCredentials> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), config.SIP_AUTH_TIMEOUT_MS);
   try {
-    const response = await fetch(config.SIP_AUTH_URL, {
+    const response = await fetch(url, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -80,7 +96,7 @@ export async function fetchSipCredentials(casdoorLogin: string): Promise<SipCred
       signal: controller.signal
     });
     if (!response.ok) {
-      const detail = await response.text();
+      const detail = await response.text().catch(() => "");
       throw new SipCredentialsError(
         `External SIP auth failed: HTTP ${response.status}: ${detail.slice(0, 300)}`,
         [401, 403, 404].includes(response.status) ? 403 : 502
@@ -114,6 +130,10 @@ export async function fetchSipCredentials(casdoorLogin: string): Promise<SipCred
       refreshAfter: Date.now() + refreshIn * 1000,
       iceServers: config.iceServers
     };
+  } catch (error) {
+    if (error instanceof SipCredentialsError) throw error;
+    if (controller.signal.aborted) throw new SipAuthTimeoutError();
+    throw error;
   } finally {
     clearTimeout(timeout);
   }
