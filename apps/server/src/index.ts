@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import express, { type NextFunction, type Request, type Response } from "express";
-import session from "express-session";
+import { createSessionStorage, sessionMiddleware } from "./session.js";
 import helmet from "helmet";
 import { config } from "./config.js";
 import { callRecordInputSchema, HistoryStore } from "./historyStore.js";
@@ -30,18 +30,19 @@ app.use(helmet({
     : false
 }));
 app.use(express.json({ limit: "32kb" }));
-app.use(session({
-  name: "sip-phone.sid",
-  secret: config.SESSION_SECRET,
-  resave: false,
-  saveUninitialized: false,
-  cookie: {
-    httpOnly: true,
-    secure: "auto",
-    sameSite: "lax",
-    maxAge: 8 * 60 * 60 * 1000
+const sessionStorage = await createSessionStorage();
+// Liveness must not restart otherwise healthy pods during a Redis outage.
+app.get("/api/health", (_req, res) => res.json({ ok: true, requestId: randomUUID() }));
+app.get("/api/ready", (_req, res) => res.status(sessionStorage.ready() ? 200 : 503).json({ ok: sessionStorage.ready() }));
+app.use((req, res, next) => {
+  if (req.path.startsWith("/api/")) res.setHeader("Cache-Control", "no-store");
+  if (!sessionStorage.ready()) {
+    res.status(503).json({ error: "Session storage temporarily unavailable" });
+    return;
   }
-}));
+  next();
+});
+app.use(sessionMiddleware(sessionStorage.store));
 
 app.use((req, res, next) => {
   if (["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) {
@@ -62,13 +63,11 @@ function requireUser(req: Request, res: Response, next: NextFunction): void {
   next();
 }
 
-app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, requestId: randomUUID() });
-});
-
 app.get("/api/auth/login", async (req, res, next) => {
   try {
-    res.redirect(await createAuthorizationUrl(req, typeof req.query.returnTo === "string" ? req.query.returnTo : "/"));
+    const url = createAuthorizationUrl(req, typeof req.query.returnTo === "string" ? req.query.returnTo : "/");
+    await new Promise<void>((resolve, reject) => req.session.save(error => error ? reject(error) : resolve()));
+    res.redirect(url);
   } catch (error) {
     next(error);
   }
@@ -82,6 +81,7 @@ app.get("/api/auth/callback", async (req, res, next) => {
     if (oidcError) throw new Error(`Casdoor authorization failed: ${oidcError}`);
     if (!code || !state) throw new Error("Missing Casdoor code or state");
     const { returnTo } = await finishAuthorization(req, code, state);
+    await new Promise<void>((resolve, reject) => req.session.save(error => error ? reject(error) : resolve()));
     res.redirect(new URL(returnTo, config.APP_BASE_URL).toString());
   } catch (error) {
     next(error);
