@@ -100,6 +100,7 @@ export async function finishAuthorization(req: Request, code: string, state: str
     roles: Array.isArray(userInfo.roles) ? userInfo.roles.filter((role): role is string => typeof role === "string") : []
   };
 
+  await new Promise<void>((resolve, reject) => req.session.regenerate(error => error ? reject(error) : resolve()));
   req.session.user = user;
   return { user, returnTo: flow.returnTo };
 }
