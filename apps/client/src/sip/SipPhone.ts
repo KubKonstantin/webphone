@@ -73,6 +73,7 @@ export class SipPhone {
   private reconnectTimer?: number;
   private subscribers = new Set<(snapshot: PhoneSnapshot) => void>();
   private disposed = false;
+  private sessionExpired = false;
   private snapshot: PhoneSnapshot = {
     registration: "offline",
     dnd: false,
@@ -152,6 +153,7 @@ export class SipPhone {
 
   async start(): Promise<void> {
     this.disposed = false;
+    this.sessionExpired = false;
     document.addEventListener("pointerdown", this.unlockRingtone, { once: true });
     document.addEventListener("keydown", this.unlockRingtone, { once: true });
     await this.refreshCredentials(true);
@@ -339,6 +341,7 @@ export class SipPhone {
   }
 
   private async refreshCredentials(initial = false): Promise<void> {
+    if (this.disposed || this.sessionExpired) return;
     window.clearTimeout(this.refreshTimer);
     try {
       const credentials = await api.sipCredentials();
@@ -351,6 +354,13 @@ export class SipPhone {
       this.update({ sipProfileForbidden: false });
       this.scheduleCredentialRefresh(credentials);
     } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        this.sessionExpired = true;
+        window.clearTimeout(this.reconnectTimer);
+        this.pendingCredentials = undefined;
+        this.update({ registration: "error", error: "Сессия сайта недоступна. Нажмите «Войти заново»." });
+        return;
+      }
       if (error instanceof ApiError && error.status === 403) {
         this.update({ registration: "error", sipProfileForbidden: true, error: undefined });
         return;
@@ -421,6 +431,7 @@ export class SipPhone {
   }
 
   private scheduleReconnect(): void {
+    if (this.sessionExpired || this.disposed) return;
     window.clearTimeout(this.reconnectTimer);
     this.reconnectTimer = window.setTimeout(async () => {
       if (!this.userAgent || this.disposed) return;

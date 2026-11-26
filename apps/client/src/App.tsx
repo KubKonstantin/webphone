@@ -68,6 +68,7 @@ function formatTimer(totalSeconds: number): string {
 export default function App() {
   const [authLoading, setAuthLoading] = useState(true);
   const [user, setUser] = useState<User>();
+  const [authExpired, setAuthExpired] = useState(false);
   const [snapshot, setSnapshot] = useState(initialSnapshot);
   const [destination, setDestination] = useState("");
   const [transferTarget, setTransferTarget] = useState("");
@@ -80,6 +81,12 @@ export default function App() {
   const phone = useMemo(() => new SipPhone(), []);
   const installation = useAppInstall();
   const sipLink = useSipLinks(!!user, snapshot.callState !== "idle", setDestination);
+
+  useEffect(() => {
+    const expired = () => setAuthExpired(true);
+    window.addEventListener("web-phone:auth-required", expired);
+    return () => window.removeEventListener("web-phone:auth-required", expired);
+  }, []);
 
   useEffect(() => {
     api.me()
@@ -119,7 +126,7 @@ export default function App() {
   }, [snapshot.callState]);
 
   const inCall = snapshot.callState !== "idle";
-  const canCall = snapshot.registration === "registered" && snapshot.callState === "idle" && destination.trim().length > 0;
+  const canCall = !authExpired && snapshot.registration === "registered" && snapshot.callState === "idle" && destination.trim().length > 0;
 
   const startCall = async () => {
     try {
@@ -193,6 +200,10 @@ export default function App() {
         </div>
       </header>
 
+      {authExpired && <div className="error-banner" role="alert">
+        Сессия сайта истекла или недоступна. {inCall ? "Завершите текущий разговор, затем войдите заново." : "Войдите заново, чтобы восстановить работу телефона."}
+        <button type="button" className="secondary-button" disabled={inCall} onClick={() => { window.location.href = "/api/auth/login"; }}>Войти заново</button>
+      </div>}
       <AppActions installation={installation} />
       <AudioSetup key={user.login} phone={phone} storageKey={`web-phone.audio.${user.login}`} busy={inCall}>
         <NotificationSettings notifications={phone.notifications} />

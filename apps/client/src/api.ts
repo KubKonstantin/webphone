@@ -50,6 +50,9 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     }
   });
   if (!response.ok) {
+    if (response.status === 401 && url !== "/api/auth/me" && url !== "/api/auth/logout") {
+      window.dispatchEvent(new Event("web-phone:auth-required"));
+    }
     const body = (await response.json().catch(() => ({}))) as { error?: string };
     throw new ApiError(body.error ?? `HTTP ${response.status}`, response.status);
   }
